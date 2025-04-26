@@ -1,0 +1,11 @@
+.venv
+checkpoints
+/data
+
+__pycache__/
+*.py[cod]
+
+logs
+results
+
+.cursorignore
