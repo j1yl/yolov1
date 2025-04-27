@@ -8,7 +8,6 @@ import tqdm
 import json
 from datetime import datetime
 import math
-from torch.cuda.amp import autocast, GradScaler
 
 from model import YOLOv1
 from dataset import VOCDataset
@@ -16,7 +15,7 @@ from loss import YOLOLoss
 from utils import convert_cellboxes_to_boxes, calculate_map
 from augmentations import YOLOAugmentations
 
-def train_epoch(model, train_loader, optimizer, loss_fn, device, epoch, learning_rate, scaler):
+def train_epoch(model, train_loader, optimizer, loss_fn, device, epoch, learning_rate):
     model.train()
     loop = tqdm.tqdm(train_loader, leave=True)
     mean_loss = []
@@ -32,17 +31,9 @@ def train_epoch(model, train_loader, optimizer, loss_fn, device, epoch, learning
     for batch_idx, (images, targets) in enumerate(loop):
         images, targets = images.to(device), targets.to(device)
         
-        # Forward pass with mixed precision
-        with autocast():
-            predictions = model(images)
-            loss, loss_components = loss_fn(predictions, targets)
-        
-        # Backward pass with gradient scaling
-        optimizer.zero_grad()
-        scaler.scale(loss).backward()
-        scaler.step(optimizer)
-        scaler.update()
-        
+        # Forward pass
+        predictions = model(images)
+        loss, loss_components = loss_fn(predictions, targets)
         mean_loss.append(loss.item())
         
         # Collect detailed loss components
@@ -51,12 +42,13 @@ def train_epoch(model, train_loader, optimizer, loss_fn, device, epoch, learning
         noobj_losses.append(loss_components['noobj_loss'].item())
         class_losses.append(loss_components['class_loss'].item())
         
+        # Backward pass
+        optimizer.zero_grad()
+        loss.backward()
+        optimizer.step()
+        
         # Update progress bar
         loop.set_postfix(loss=loss.item(), lr=learning_rate)
-        
-        # Clear memory
-        del predictions, loss, loss_components
-        torch.cuda.empty_cache()
     
     epoch_time = time.time() - epoch_start_time
     epoch_mean_loss = sum(mean_loss) / len(mean_loss)
@@ -85,7 +77,7 @@ def validate(model, val_loader, device, epoch):
     num_batches = len(val_loader)
     
     print(f"\nValidating epoch {epoch}...")
-    with torch.no_grad(), autocast():
+    with torch.no_grad():
         for batch_idx, (images, targets) in enumerate(val_loader):
             # Print progress
             if batch_idx % 10 == 0:
@@ -100,10 +92,6 @@ def validate(model, val_loader, device, epoch):
             # Calculate mAP for this batch
             batch_map = calculate_map(predictions, targets)
             total_map += batch_map
-            
-            # Clear memory
-            del predictions
-            torch.cuda.empty_cache()
             
     avg_map = total_map / num_batches
     print(f"Epoch {epoch} Validation mAP: {avg_map:.4f}")
@@ -134,12 +122,16 @@ def main():
     # Configuration
     INITIAL_LR = 1e-3  # Starting learning rate
     DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
-    BATCH_SIZE = 16  # Reduced batch size to save memory
+    BATCH_SIZE = 80  # RTX 3090 has 24GB VRAM, can handle larger batches
     WEIGHT_DECAY = 0
     EPOCHS = 135  # same as original paper
     WARMUP_EPOCHS = 5  # Number of epochs to warm up learning rate
     NUM_WORKERS = 4
     PIN_MEMORY = True
+    # LOAD_PRETRAINED = False
+    # LOAD_PRETRAINED_MODEL_PATH = ""
+    # IMG_DIR = "data/VOC2012/JPEGImages"
+    # LABEL_DIR = "data/VOC2012/Annotations"
     
     # Create directories for logs and checkpoints
     os.makedirs("checkpoints", exist_ok=True)
@@ -189,9 +181,8 @@ def main():
         shuffle=False,
     )
     
-    # Initialize model with gradient checkpointing
+    # Initialize model with dropout rate 0.5 after the first connected layer
     model = YOLOv1(in_channels=3, num_boxes=2, num_classes=20, dropout_rate=0.5).to(DEVICE)
-    model.use_checkpointing()  # Enable gradient checkpointing
     
     # Initialize optimizer with initial learning rate
     optimizer = optim.Adam(
@@ -199,8 +190,11 @@ def main():
     )
     loss_fn = YOLOLoss()
     
-    # Initialize gradient scaler for mixed precision training
-    scaler = GradScaler()
+    # Load pretrained model if specified
+    # if LOAD_PRETRAINED:
+    #     checkpoint = torch.load(LOAD_PRETRAINED_MODEL_PATH)
+    #     model.load_state_dict(checkpoint["state_dict"])
+    #     optimizer.load_state_dict(checkpoint["optimizer"])
     
     # Training statistics
     training_stats = {
@@ -212,9 +206,7 @@ def main():
             'device': DEVICE,
             'model': 'YOLOv1',
             'dataset': 'PASCAL VOC 2012',
-            'dropout_rate': 0.5,
-            'mixed_precision': True,
-            'gradient_checkpointing': True
+            'dropout_rate': 0.5
         },
         'epochs': []
     }
@@ -234,7 +226,7 @@ def main():
             param_group['lr'] = current_lr
         
         # Training phase
-        epoch_stats = train_epoch(model, train_loader, optimizer, loss_fn, DEVICE, epoch, current_lr, scaler)
+        epoch_stats = train_epoch(model, train_loader, optimizer, loss_fn, DEVICE, epoch, current_lr)
         
         # Validation phase (every 15 epochs)
         if (epoch + 1) % 15 == 0 or epoch == 0:
@@ -273,6 +265,17 @@ def main():
                     "learning_rate": current_lr
                 }, os.path.join("checkpoints", "best_model.pth.tar"))
                 print(f"New best model saved with mAP: {val_map:.4f}")
+        
+        # Save checkpoint every 15 epochs
+        if (epoch + 1) % 15 == 0 or epoch == 0:
+            checkpoint = {
+                'epoch': epoch + 1,
+                'model_state_dict': model.state_dict(),
+                'optimizer_state_dict': optimizer.state_dict(),
+                'train_loss': epoch_stats['mean_loss'],
+                'learning_rate': current_lr
+            }
+            torch.save(checkpoint, os.path.join("checkpoints", f"yolov1_epoch_{epoch+1}.pt"))
         
         # Add epoch stats to training stats
         training_stats['epochs'].append(epoch_stats)

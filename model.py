@@ -1,11 +1,10 @@
-import torch
 import torch.nn as nn
 
 
 class ConvBlock(nn.Module):
-    def __init__(self, in_channels, out_channels, kernel_size=3, stride=1, padding=1):
+    def __init__(self, in_channels, out_channels, kernel_size, stride=1, padding=0):
         super(ConvBlock, self).__init__()
-        self.conv = nn.Conv2d(in_channels, out_channels, kernel_size, stride, padding, bias=False)
+        self.conv = nn.Conv2d(in_channels, out_channels, kernel_size, stride, padding)
         self.bn = nn.BatchNorm2d(out_channels)
         self.leaky = nn.LeakyReLU(0.1)
 
@@ -26,60 +25,45 @@ class YOLOv1(nn.Module):
         # 2. OG used skip connections, this uses sequential blocks
         # 3. OG had more complex backbone with additional conv blocks
         self.feature_extractor = nn.Sequential(
-            ConvBlock(in_channels, 64),
-            ConvBlock(64, 64),
-            nn.MaxPool2d(kernel_size=2, stride=2),
-            
-            ConvBlock(64, 128),
-            ConvBlock(128, 128),
-            nn.MaxPool2d(kernel_size=2, stride=2),
-            
-            ConvBlock(128, 256),
-            ConvBlock(256, 256),
-            ConvBlock(256, 256),
-            nn.MaxPool2d(kernel_size=2, stride=2),
-            
-            ConvBlock(256, 512),
-            ConvBlock(512, 512),
-            ConvBlock(512, 512),
-            nn.MaxPool2d(kernel_size=2, stride=2),
-            
-            ConvBlock(512, 1024),
-            ConvBlock(1024, 1024),
-            ConvBlock(1024, 1024),
-            nn.MaxPool2d(kernel_size=2, stride=2),
-            
-            ConvBlock(1024, 1024),
-            ConvBlock(1024, 1024),
+            ConvBlock(in_channels, 64, 7, stride=2, padding=3),
+            nn.MaxPool2d(2, 2),
+            ConvBlock(64, 192, 3, padding=1),
+            nn.MaxPool2d(2, 2),
+            ConvBlock(192, 128, 1),
+            ConvBlock(128, 256, 3, padding=1),
+            ConvBlock(256, 256, 1),
+            ConvBlock(256, 512, 3, padding=1),
+            nn.MaxPool2d(2, 2),
+            ConvBlock(512, 256, 1),
+            ConvBlock(256, 512, 3, padding=1),
+            ConvBlock(512, 256, 1),
+            ConvBlock(256, 512, 3, padding=1),
+            ConvBlock(512, 512, 1),
+            ConvBlock(512, 1024, 3, padding=1),
+            nn.MaxPool2d(2, 2),
+            ConvBlock(1024, 512, 1),
+            ConvBlock(512, 1024, 3, padding=1),
+            ConvBlock(1024, 512, 1),
+            ConvBlock(512, 1024, 3, padding=1),
+            ConvBlock(1024, 1024, 3, stride=2, padding=1),
+            ConvBlock(1024, 1024, 3, padding=1),
+            ConvBlock(1024, 1024, 3, padding=1),
         )
 
-        self.classifier = nn.Sequential(
+        self.fc_layers = nn.Sequential(
+            nn.Flatten(),
             nn.Linear(1024 * 7 * 7, 4096),
             nn.LeakyReLU(0.1),
-            nn.Dropout(dropout_rate),
+            nn.Dropout(dropout_rate),  # Dropout with configurable rate
             nn.Linear(4096, 7 * 7 * (5 * num_boxes + num_classes)),
+            nn.Sigmoid(),  # For normalizing the output predictions
         )
-
-        # Initialize weights
-        self._initialize_weights()
-
-    def _initialize_weights(self):
-        for m in self.modules():
-            if isinstance(m, nn.Conv2d):
-                nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='leaky_relu')
-            elif isinstance(m, nn.BatchNorm2d):
-                nn.init.constant_(m.weight, 1)
-                nn.init.constant_(m.bias, 0)
-            elif isinstance(m, nn.Linear):
-                nn.init.normal_(m.weight, 0, 0.01)
-                nn.init.constant_(m.bias, 0)
-
-    def use_checkpointing(self):
-        """Enable gradient checkpointing to save memory"""
-        self.feature_extractor.use_checkpointing()
 
     def forward(self, x):
         features = self.feature_extractor(x)
-        features = features.view(features.size(0), -1)
-        output = self.classifier(features)
-        return output.view(-1, 7, 7, (5 * self.num_boxes + self.num_classes))
+        output = self.fc_layers(features)
+
+        # Reshape to match the YOLO output format: S x S x (5*B + C)
+        # where S=7 (grid size), B=2 (boxes per cell), C=20 (num classes)
+        batch_size = x.shape[0]
+        return output.reshape(batch_size, 7, 7, (5 * self.num_boxes + self.num_classes))
