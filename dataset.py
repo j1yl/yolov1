@@ -1,6 +1,5 @@
 import os
 import torch
-import cv2
 import xml.etree.ElementTree as ET
 from torch.utils.data import Dataset
 import numpy as np
@@ -64,12 +63,12 @@ class VOCDataset(Dataset):
         img_path = os.path.join(self.image_dir, f"{img_name}.jpg")
         annotation_path = os.path.join(self.annotation_dir, f"{img_name}.xml")
 
-        # Load image
-        image = cv2.imread(img_path)
-        image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+        # Load image using PIL
+        image = Image.open(img_path).convert("RGB")
+        image = np.array(image)  # Convert to numpy array for albumentations
 
         # Get image dimensions
-        height, width, _ = image.shape
+        height, width = image.shape[:2]
 
         # Parse annotation
         tree = ET.parse(annotation_path)
