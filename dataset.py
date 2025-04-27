@@ -4,6 +4,10 @@ import cv2
 import xml.etree.ElementTree as ET
 from torch.utils.data import Dataset
 import numpy as np
+import pandas as pd
+from PIL import Image
+import albumentations as A
+from albumentations.pytorch import ToTensorV2
 
 
 class VOCDataset(Dataset):
@@ -148,3 +152,100 @@ class VOCDataset(Dataset):
                 )
 
         return image, target
+
+class YOLODataset(Dataset):
+    def __init__(self, csv_file, img_dir, label_dir, S=7, B=2, C=20, transform=None):
+        self.annotations = pd.read_csv(csv_file)
+        self.img_dir = img_dir
+        self.label_dir = label_dir
+        self.transform = transform
+        self.S = S
+        self.B = B
+        self.C = C
+        
+    def __len__(self):
+        return len(self.annotations)
+    
+    def __getitem__(self, index):
+        label_path = os.path.join(self.label_dir, self.annotations.iloc[index, 1])
+        boxes = []
+        with open(label_path) as f:
+            for label in f.readlines():
+                class_label, x, y, width, height = [
+                    float(x) for x in label.replace("\n", "").split()
+                ]
+                boxes.append([class_label, x, y, width, height])
+        
+        img_path = os.path.join(self.img_dir, self.annotations.iloc[index, 0])
+        image = Image.open(img_path).convert("RGB")
+        boxes = torch.tensor(boxes)
+        
+        if self.transform:
+            # Apply basic augmentations
+            image = self.transform(image)
+            
+            # Convert boxes to tensor format [x, y, w, h, class]
+            boxes = boxes.clone()
+            
+            # Scale coordinates to match transformed image size
+            boxes[:, 1:] = boxes[:, 1:] * torch.tensor([image.shape[-1], image.shape[-2], 
+                                                        image.shape[-1], image.shape[-2]])
+        
+        # Convert to YOLO format
+        label_matrix = torch.zeros((self.S, self.S, self.C + self.B * 5))
+        
+        for box in boxes:
+            class_label, x, y, width, height = box.tolist()
+            
+            # Convert to grid cell coordinates
+            i, j = int(self.S * y), int(self.S * x)
+            x_cell, y_cell = self.S * x - j, self.S * y - i
+            
+            # Ensure we're within bounds
+            if i < self.S and j < self.S:
+                # Set class one-hot encoding
+                label_matrix[i, j, int(class_label)] = 1
+                
+                # Set box coordinates and confidence
+                label_matrix[i, j, self.C:self.C+4] = torch.tensor([x_cell, y_cell, width, height])
+                label_matrix[i, j, self.C+4] = 1  # confidence
+                
+                # Set second box to be the same (YOLOv1 only uses one box per cell)
+                label_matrix[i, j, self.C+5:self.C+9] = torch.tensor([x_cell, y_cell, width, height])
+                label_matrix[i, j, self.C+9] = 1  # confidence
+        
+        return image, label_matrix
+
+def get_transform(train=True):
+    if train:
+        return A.Compose(
+            [
+                A.Resize(448, 448),
+                A.HorizontalFlip(p=0.5),
+                A.RandomBrightnessContrast(p=0.2),
+                A.Normalize(
+                    mean=[0.485, 0.456, 0.406],
+                    std=[0.229, 0.224, 0.225],
+                ),
+                ToTensorV2(),
+            ],
+            bbox_params=A.BboxParams(
+                format="yolo",
+                label_fields=["class_labels"],
+            ),
+        )
+    else:
+        return A.Compose(
+            [
+                A.Resize(448, 448),
+                A.Normalize(
+                    mean=[0.485, 0.456, 0.406],
+                    std=[0.229, 0.224, 0.225],
+                ),
+                ToTensorV2(),
+            ],
+            bbox_params=A.BboxParams(
+                format="yolo",
+                label_fields=["class_labels"],
+            ),
+        )

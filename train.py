@@ -99,24 +99,24 @@ def validate(model, val_loader, device, epoch):
 
 def get_learning_rate(epoch, warmup_epochs=5, total_epochs=135):
     """
-    Implement the learning rate schedule from the YOLOv1 paper:
-    - First warmup_epochs: gradually increase from 10^-3 to 10^-2
-    - Next 75 epochs: 10^-2
-    - Next 30 epochs: 10^-3
-    - Final 30 epochs: 10^-4
+    Implement a more conservative learning rate schedule:
+    - First warmup_epochs: gradually increase from 10^-4 to 10^-3
+    - Next 75 epochs: 10^-3
+    - Next 30 epochs: 10^-4
+    - Final 30 epochs: 10^-5
     """
     if epoch < warmup_epochs:
-        # Linear warmup from 10^-3 to 10^-2
-        return 1e-3 + (1e-2 - 1e-3) * (epoch / warmup_epochs)
+        # Linear warmup from 10^-4 to 10^-3
+        return 1e-4 + (1e-3 - 1e-4) * (epoch / warmup_epochs)
     elif epoch < warmup_epochs + 75:
-        # 10^-2 for 75 epochs
-        return 1e-2
-    elif epoch < warmup_epochs + 75 + 30:
-        # 10^-3 for 30 epochs
+        # 10^-3 for 75 epochs
         return 1e-3
-    else:
-        # 10^-4 for the remaining epochs
+    elif epoch < warmup_epochs + 75 + 30:
+        # 10^-4 for 30 epochs
         return 1e-4
+    else:
+        # 10^-5 for the remaining epochs
+        return 1e-5
 
 def main():
     # Configuration
@@ -229,7 +229,7 @@ def main():
         epoch_stats = train_epoch(model, train_loader, optimizer, loss_fn, DEVICE, epoch, current_lr)
         
         # Validation phase (every 15 epochs)
-        if (epoch + 1) % 15 == 0:
+        if (epoch + 1) % 15 == 0 or epoch == 0:
             val_map = validate(model, val_loader, DEVICE, epoch + 1)
             
             # Save checkpoint

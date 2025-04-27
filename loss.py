@@ -2,149 +2,141 @@ import torch
 import torch.nn as nn
 
 class YOLOLoss(nn.Module):
-    def __init__(self, S=7, B=2, C=20, lambda_coord=5, lambda_noobj=0.5):
+    def __init__(self, S=7, B=2, C=20):
         super(YOLOLoss, self).__init__()
         self.S = S
         self.B = B
         self.C = C
-        self.lambda_coord = lambda_coord
-        self.lambda_noobj = lambda_noobj
-        self.mse = nn.MSELoss(reduction="sum")
-
-    def forward(self, predictions, targets):
-        predictions = predictions.reshape(-1, self.S, self.S, self.C + self.B * 5)
-
-        # Calculate IoU for the two predicted boxes with target
-        iou_b1 = self.calculate_iou(predictions[..., self.C+1:self.C+5], targets[..., self.C+1:self.C+5])
-        iou_b2 = self.calculate_iou(predictions[..., self.C+6:self.C+10], targets[..., self.C+1:self.C+5])
-        ious = torch.cat([iou_b1.unsqueeze(0), iou_b2.unsqueeze(0)], dim=0)
-
-        # Get the box with highest IoU
-        # bestbox will be indices of 0, 1 for which bbox has highest IoU
-        iou_maxes, bestbox = torch.max(ious, dim=0)
-
-        # Create masks
-        exists_box = targets[..., self.C:self.C+1]  # Identity of object (1 if exists)
-
-        # ======================== #
-        #   FOR BOX COORDINATES    #
-        # ======================== #
-
-        # Set boxes with no object in them to 0
-        box_predictions = exists_box * (
-            bestbox * predictions[..., self.C+6:self.C+10]
-            + (1 - bestbox) * predictions[..., self.C+1:self.C+5]
-        )
-
-        box_targets = exists_box * targets[..., self.C+1:self.C+5]
-
-        # Take sqrt of width, height
-        box_predictions[..., 2:4] = torch.sign(box_predictions[..., 2:4]) * torch.sqrt(
-            torch.abs(box_predictions[..., 2:4] + 1e-6)
-        )
-        box_targets[..., 2:4] = torch.sqrt(box_targets[..., 2:4])
-
-        # (N, S, S, 4) -> (N*S*S, 4)
-        box_loss = self.mse(
-            torch.flatten(box_predictions, end_dim=-2),
-            torch.flatten(box_targets, end_dim=-2)
-        )
-
-        # ==================== #
-        #   FOR OBJECT LOSS    #
-        # ==================== #
-
-        pred_box = (
-            bestbox * predictions[..., self.C+5:self.C+6] +
-            (1 - bestbox) * predictions[..., self.C:self.C+1]
-        )
-
-        # (N, S, S, 1) -> (N*S*S)
-        object_loss = self.mse(
-            torch.flatten(exists_box * pred_box),
-            torch.flatten(exists_box * targets[..., self.C:self.C+1])
-        )
-
-        # ======================= #
-        #   FOR NO OBJECT LOSS    #
-        # ======================= #
-
-        # (N, S, S, 1) -> (N*S*S)
-        no_object_loss = self.mse(
-            torch.flatten((1 - exists_box) * predictions[..., self.C:self.C+1], start_dim=1),
-            torch.flatten((1 - exists_box) * targets[..., self.C:self.C+1], start_dim=1)
-        )
-
-        no_object_loss += self.mse(
-            torch.flatten((1 - exists_box) * predictions[..., self.C+5:self.C+6], start_dim=1),
-            torch.flatten((1 - exists_box) * targets[..., self.C:self.C+1], start_dim=1)
-        )
-
-        # ================== #
-        #   FOR CLASS LOSS   #
-        # ================== #
-
-        # (N, S, S, 20) -> (N*S*S, 20)
-        class_loss = self.mse(
-            torch.flatten(exists_box * predictions[..., :self.C], end_dim=-2),
-            torch.flatten(exists_box * targets[..., :self.C], end_dim=-2)
-        )
-
-        # Sum all losses
-        loss = (
-            self.lambda_coord * box_loss
-            + object_loss
-            + self.lambda_noobj * no_object_loss
-            + class_loss
-        )
         
-        # Return both the total loss and individual components
+        # Adjust scaling factors to be more balanced
+        self.lambda_coord = 1.0  # Reduced from 5.0
+        self.lambda_noobj = 1.0  # Increased from 0.5
+        self.lambda_obj = 1.0
+        self.lambda_class = 1.0
+        
+        # MSE loss for coordinates and confidence
+        self.mse = nn.MSELoss(reduction='sum')
+        # BCE loss for class predictions
+        self.bce = nn.BCELoss(reduction='sum')
+        
+    def forward(self, predictions, targets):
+        """
+        predictions: [batch_size, S, S, B*5 + C]
+        targets: [batch_size, S, S, B*5 + C]
+        Returns:
+            total_loss: scalar tensor
+            loss_components: dict containing individual loss components
+        """
+        batch_size = predictions.shape[0]
+        
+        # Initialize loss components
+        total_loss = torch.zeros(1, device=predictions.device)
+        coord_loss = torch.zeros(1, device=predictions.device)
+        obj_loss = torch.zeros(1, device=predictions.device)
+        noobj_loss = torch.zeros(1, device=predictions.device)
+        class_loss = torch.zeros(1, device=predictions.device)
+        
+        # Calculate loss for each grid cell
+        for i in range(self.S):
+            for j in range(self.S):
+                # Get predictions and targets for this cell
+                pred_cell = predictions[:, i, j]  # [batch_size, B*5 + C]
+                target_cell = targets[:, i, j]    # [batch_size, B*5 + C]
+                
+                # Calculate IoU for each box pair
+                ious = torch.zeros((batch_size, self.B), device=predictions.device)
+                for b in range(self.B):
+                    pred_box = pred_cell[:, b*5:(b+1)*5]    # [batch_size, 5]
+                    target_box = target_cell[:, :5]          # [batch_size, 5]
+                    ious[:, b] = self._calculate_iou(pred_box, target_box)
+                
+                # Find best matching box for each sample
+                best_box_idx = torch.argmax(ious, dim=1)  # [batch_size]
+                
+                # Calculate coordinate loss for best matching boxes
+                for b in range(self.B):
+                    mask = (best_box_idx == b) & (target_cell[:, 4] == 1)
+                    if mask.any():
+                        pred_box = pred_cell[mask, b*5:(b+1)*5]
+                        target_box = target_cell[mask, :5]
+                        cell_coord_loss = self.mse(pred_box[:, :4], target_box[:, :4])
+                        coord_loss += cell_coord_loss
+                        total_loss += self.lambda_coord * cell_coord_loss
+                
+                # Calculate object loss
+                obj_mask = target_cell[:, 4] == 1
+                if obj_mask.any():
+                    for b in range(self.B):
+                        pred_conf = pred_cell[obj_mask, b*5+4]
+                        target_conf = target_cell[obj_mask, 4]
+                        cell_obj_loss = self.mse(pred_conf, target_conf)
+                        obj_loss += cell_obj_loss
+                        total_loss += self.lambda_obj * cell_obj_loss
+                
+                # Calculate no object loss
+                noobj_mask = target_cell[:, 4] == 0
+                if noobj_mask.any():
+                    for b in range(self.B):
+                        pred_conf = pred_cell[noobj_mask, b*5+4]
+                        target_conf = target_cell[noobj_mask, 4]
+                        cell_noobj_loss = self.mse(pred_conf, target_conf)
+                        noobj_loss += cell_noobj_loss
+                        total_loss += self.lambda_noobj * cell_noobj_loss
+                
+                # Calculate class loss
+                class_mask = target_cell[:, 4] == 1
+                if class_mask.any():
+                    pred_class = pred_cell[class_mask, self.B*5:]
+                    target_class = target_cell[class_mask, self.B*5:]
+                    cell_class_loss = self.bce(pred_class, target_class)
+                    class_loss += cell_class_loss
+                    total_loss += self.lambda_class * cell_class_loss
+        
+        # Normalize losses by batch size
+        total_loss = total_loss / batch_size
+        coord_loss = coord_loss / batch_size
+        obj_loss = obj_loss / batch_size
+        noobj_loss = noobj_loss / batch_size
+        class_loss = class_loss / batch_size
+        
+        # Return total loss and components
         loss_components = {
-            'coord_loss': self.lambda_coord * box_loss,
-            'obj_loss': object_loss,
-            'noobj_loss': self.lambda_noobj * no_object_loss,
+            'coord_loss': coord_loss,
+            'obj_loss': obj_loss,
+            'noobj_loss': noobj_loss,
             'class_loss': class_loss
         }
         
-        return loss, loss_components
-
-    def calculate_iou(self, box1, box2):
+        return total_loss, loss_components
+    
+    def _calculate_iou(self, pred_box, target_box):
         """
-        Calculate IoU (Intersection over Union) of two bounding boxes.
-
-        Args:
-            box1 (tensor): Predicted box of shape (N, S, S, 4)
-            box2 (tensor): Target box of shape (N, S, S, 4)
-
-        Returns:
-            tensor: IoU value of shape (N, S, S)
+        Calculate IoU between predicted and target boxes
+        pred_box: [N, 5] (x, y, w, h, conf)
+        target_box: [N, 5] (x, y, w, h, conf)
         """
-        # Convert to (x1, y1, x2, y2) format
-        box1_x1 = box1[..., 0:1] - box1[..., 2:3] / 2
-        box1_y1 = box1[..., 1:2] - box1[..., 3:4] / 2
-        box1_x2 = box1[..., 0:1] + box1[..., 2:3] / 2
-        box1_y2 = box1[..., 1:2] + box1[..., 3:4] / 2
-
-        box2_x1 = box2[..., 0:1] - box2[..., 2:3] / 2
-        box2_y1 = box2[..., 1:2] - box2[..., 3:4] / 2
-        box2_x2 = box2[..., 0:1] + box2[..., 2:3] / 2
-        box2_y2 = box2[..., 1:2] + box2[..., 3:4] / 2
-
+        # Extract coordinates
+        pred_x = pred_box[:, 0]
+        pred_y = pred_box[:, 1]
+        pred_w = pred_box[:, 2]
+        pred_h = pred_box[:, 3]
+        
+        target_x = target_box[:, 0]
+        target_y = target_box[:, 1]
+        target_w = target_box[:, 2]
+        target_h = target_box[:, 3]
+        
         # Calculate intersection area
-        x1 = torch.max(box1_x1, box2_x1)
-        y1 = torch.max(box1_y1, box2_y1)
-        x2 = torch.min(box1_x2, box2_x2)
-        y2 = torch.min(box1_y2, box2_y2)
-
-        # Intersection area
-        intersection = (x2 - x1).clamp(0) * (y2 - y1).clamp(0)
-
-        # Union area
-        box1_area = abs((box1_x2 - box1_x1) * (box1_y2 - box1_y1))
-        box2_area = abs((box2_x2 - box2_x1) * (box2_y2 - box2_y1))
-        union = box1_area + box2_area - intersection + 1e-6
-
-        # IoU
-        iou = intersection / union
-
+        w_intersection = torch.min(pred_w, target_w)
+        h_intersection = torch.min(pred_h, target_h)
+        intersection = w_intersection * h_intersection
+        
+        # Calculate union area
+        pred_area = pred_w * pred_h
+        target_area = target_w * target_h
+        union = pred_area + target_area - intersection
+        
+        # Calculate IoU
+        iou = intersection / (union + 1e-6)  # Add small epsilon to avoid division by zero
+        
         return iou 
