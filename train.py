@@ -98,7 +98,7 @@ def main():
     # Configuration
     LEARNING_RATE = 2e-5
     DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
-    BATCH_SIZE = 64  # RTX 3090 has 24GB VRAM, can handle larger batches
+    BATCH_SIZE = 80  # RTX 3090 has 24GB VRAM, can handle larger batches
     WEIGHT_DECAY = 0
     EPOCHS = 135 # same as original paper
     NUM_WORKERS = 4
@@ -195,8 +195,8 @@ def main():
         # Training phase
         epoch_stats = train_epoch(model, train_loader, optimizer, loss_fn, DEVICE, epoch)
         
-        # Validation phase (every 9 epochs)
-        if (epoch + 1) % 9 == 0:
+        # Validation phase (every 15 epochs)
+        if (epoch + 1) % 15 == 0:
             val_map = validate(model, val_loader, DEVICE, epoch + 1)
             
             # Save checkpoint
@@ -230,14 +230,15 @@ def main():
                 }, os.path.join("checkpoints", "best_model.pth.tar"))
                 print(f"New best model saved with mAP: {val_map:.4f}")
         
-        # Save checkpoint every epoch
-        checkpoint = {
-            'epoch': epoch + 1,
-            'model_state_dict': model.state_dict(),
-            'optimizer_state_dict': optimizer.state_dict(),
-            'train_loss': epoch_stats['mean_loss']
-        }
-        torch.save(checkpoint, os.path.join("checkpoints", f"yolov1_epoch_{epoch+1}.pt"))
+        # Save checkpoint every 5 epochs
+        if (epoch + 1) % 5 == 0:
+            checkpoint = {
+                'epoch': epoch + 1,
+                'model_state_dict': model.state_dict(),
+                'optimizer_state_dict': optimizer.state_dict(),
+                'train_loss': epoch_stats['mean_loss']
+            }
+            torch.save(checkpoint, os.path.join("checkpoints", f"yolov1_epoch_{epoch+1}.pt"))
         
         # Add epoch stats to training stats
         training_stats['epochs'].append(epoch_stats)

@@ -52,11 +52,15 @@ def calculate_iou_np(box, boxes):
 
     Args:
         box (numpy.ndarray): Single box [x1, y1, x2, y2]
-        boxes (numpy.ndarray): Array of boxes (..., 4)
+        boxes (numpy.ndarray): Array of boxes (..., 4) or single box [x1, y1, x2, y2]
 
     Returns:
-        numpy.ndarray: IoU values
+        numpy.ndarray or float: IoU value(s)
     """
+    # Handle single box comparison
+    if boxes.ndim == 1:
+        boxes = boxes.reshape(1, -1)
+    
     # Box coordinates
     x1 = np.maximum(box[0], boxes[:, 0])
     y1 = np.maximum(box[1], boxes[:, 1])
@@ -74,6 +78,9 @@ def calculate_iou_np(box, boxes):
     # IoU
     iou = intersection / union
 
+    # Return single value if comparing with one box
+    if boxes.shape[0] == 1:
+        return iou[0]
     return iou
 
 
@@ -225,6 +232,10 @@ def calculate_map(predictions, targets, iou_threshold=0.5):
     # Unpack predictions
     all_bboxes, all_scores, all_class_ids = predictions
 
+    # Move targets to CPU if it's a tensor
+    if torch.is_tensor(targets):
+        targets = targets.cpu()
+
     # Process each class
     for class_id in range(num_classes):
         all_predictions = []
@@ -313,6 +324,10 @@ def calculate_ap(predictions, targets, iou_threshold=0.5):
             if target_idx in used_targets:
                 continue
 
+            # Convert target box to numpy array if it's not already
+            target_box = np.array(target_box)
+            pred_box = np.array(pred_box)
+            
             iou = calculate_iou_np(pred_box, target_box)
             if iou > best_iou:
                 best_iou = iou
