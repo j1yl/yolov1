@@ -1,0 +1,187 @@
+\documentclass[conference]{IEEEtran}
+\usepackage{amsmath}
+\usepackage{graphicx}
+\usepackage{listings}
+\usepackage{xcolor}
+\usepackage{hyperref}
+\usepackage{algorithm}
+\usepackage{algorithmic}
+\usepackage{mathtools}
+\usepackage{enumitem}
+\usepackage{booktabs}
+\usepackage{titlesec}
+\usepackage{setspace}
+
+% Configure column spacing
+\setlength{\columnsep}{4em}
+
+% Configure title format
+\titleformat{\section}
+  {\normalfont\large\bfseries}
+  {\arabic{section}}
+  {1em}
+  {}
+\titlespacing*{\section}{0pt}{1ex plus 0.5ex minus .2ex}{1ex plus .2ex}
+
+\titleformat{\subsection}
+  {\normalfont\bfseries}
+  {\arabic{section}.\arabic{subsection}}
+  {1em}
+  {}
+\titlespacing*{\subsection}{0pt}{0.75ex plus 0.5ex minus .2ex}{0.75ex plus .2ex}
+
+% Configure listings
+\lstset{
+    basicstyle=\small\ttfamily,
+    breaklines=true,
+    frame=single,
+    xleftmargin=1em,
+    xrightmargin=1em
+}
+
+% Configure itemize and enumerate
+\setlist{leftmargin=*}
+\setlist[itemize]{label=$\bullet$}
+\setlist[enumerate]{label=\arabic*.}
+
+% Custom title command
+\renewcommand{\maketitle}{%
+  \begin{center}
+    {\bfseries\large CS190I: Generative AI, Spring 2025\\
+    Programming Assignment 1\\
+    \normalsize Joe Lee\\
+    \today}
+  \end{center}
+}
+
+\begin{document}
+
+\maketitle
+
+\section{Algorithm and Dataset Selection}
+We implemented YOLOv1 following the architecture in ``You Only Look Once: Unified, Real-Time Object Detection'' \cite{redmon2016you}. Our implementation uses the Pascal VOC dataset with a 7$\times$7 grid, 2 bounding boxes per cell, and 20 classes.
+
+\section{Implementation Details}
+
+\subsection{Enhanced Loss Function}
+The total loss function combines four components:
+
+\begin{equation}
+L_{\text{total}} = \lambda_{\text{coord}}L_{\text{coord}} + L_{\text{obj}} + \lambda_{\text{noobj}}L_{\text{noobj}} + L_{\text{class}}
+\end{equation}
+
+where $\lambda_{\text{coord}} = 5$ and $\lambda_{\text{noobj}} = 0.5$. The coordinate loss uses square root scaling for width and height:
+
+\begin{equation}
+\begin{aligned}
+L_{\text{coord}} = \sum_{i=0}^{S^2} \sum_{j=0}^{B} \mathbf{1}_{ij}^{\text{obj}} [&(x_i - \hat{x}_i)^2 + (y_i - \hat{y}_i)^2 + \\
+&(\sqrt{w_i} - \sqrt{\hat{w}_i})^2 + (\sqrt{h_i} - \sqrt{\hat{h}_i})^2]
+\end{aligned}
+\end{equation}
+
+The objectness and no-object losses are calculated as:
+
+\begin{equation}
+\begin{aligned}
+L_{\text{obj}} &= \sum_{i=0}^{S^2} \sum_{j=0}^{B} \mathbf{1}_{ij}^{\text{obj}} (C_i - \hat{C}_i)^2 \\
+L_{\text{noobj}} &= \sum_{i=0}^{S^2} \sum_{j=0}^{B} \mathbf{1}_{ij}^{\text{noobj}} (C_i - \hat{C}_i)^2 \\
+L_{\text{class}} &= \sum_{i=0}^{S^2} \mathbf{1}_{i}^{\text{obj}} \sum_{c \in \text{classes}} (p_i(c) - \hat{p}_i(c))^2
+\end{aligned}
+\end{equation}
+
+\subsection{Training Pipeline}
+Key optimizations include:
+\begin{itemize}
+    \item Adam optimizer ($lr = 2e-5$, $\beta_1 = 0.9$, $\beta_2 = 0.999$)
+    \item Validation every 9 epochs with mAP:
+    \begin{equation}
+    \text{mAP} = \frac{1}{|C|} \sum_{c \in C} \text{AP}(c)
+    \end{equation}
+\end{itemize}
+
+\subsection{Data Processing}
+Grid cell assignment and normalization:
+\begin{equation}
+\begin{aligned}
+i &= \lfloor y_{\text{center}} \times S \rfloor \\
+j &= \lfloor x_{\text{center}} \times S \rfloor \\
+x_{\text{norm}} &= \frac{x_{\text{center}} - j}{S} \\
+y_{\text{norm}} &= \frac{y_{\text{center}} - i}{S}
+\end{aligned}
+\end{equation}
+
+\subsection{Post-processing}
+Non-maximum suppression uses IoU:
+\begin{equation}
+\text{IoU}(box_1, box_2) = \frac{\text{area}(box_1 \cap box_2)}{\text{area}(box_1 \cup box_2)}
+\end{equation}
+
+\section{Training Statistics}
+
+\subsection{Progress}
+\begin{center}
+\begin{tabular}{cccc}
+\toprule
+Epoch & Loss & mAP & Time/Epoch \\
+\midrule
+1 & [TBD] & [TBD] & [TBD] \\
+15 & [TBD] & [TBD] & [TBD] \\
+30 & [TBD] & [TBD] & [TBD] \\
+45 & [TBD] & [TBD] & [TBD] \\
+60 & [TBD] & [TBD] & [TBD] \\
+75 & [TBD] & [TBD] & [TBD] \\
+90 & [TBD] & [TBD] & [TBD] \\
+105 & [TBD] & [TBD] & [TBD] \\
+120 & [TBD] & [TBD] & [TBD] \\
+135 & [TBD] & [TBD] & [TBD] \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\section{Running Instructions}
+
+\subsection{Setup and Training}
+
+\begin{center}
+Required packages:
+\begin{lstlisting}[language=bash]
+torch>=1.7.0
+numpy>=1.19.0
+matplotlib>=3.3.0
+Pillow>=8.0.0
+\end{lstlisting}
+
+Training configuration:
+\begin{lstlisting}[language=python]
+LEARNING_RATE = 2e-5
+BATCH_SIZE = 80
+EPOCHS = 135
+NUM_WORKERS = 4
+PIN_MEMORY = True
+\end{lstlisting}
+\end{center}
+
+\subsection{GPU Requirements}
+\begin{itemize}
+    \item Batch size: [TBD]
+    \item Memory: [TBD] GB
+    \item Training time: [TBD] hours
+\end{itemize}
+
+\subsection{Testing on Custom Images}
+To test on custom images:
+\begin{lstlisting}[language=bash]
+python predict.py --image path/to/image.jpg --model checkpoints/best_model.pth.tar
+\end{lstlisting}
+
+\section{Lessons Learned}
+Loss function weight tuning proved critical for model performance, while square root scaling helped handle varying object sizes. Grid-based detection required special attention to boundary objects.
+
+\begin{thebibliography}{9}
+\bibitem{redmon2016you}
+J. Redmon, S. Divvala, R. Girshick, and A. Farhadi,
+``You Only Look Once: Unified, Real-Time Object Detection,''
+\textit{arXiv:1506.02640}, 2016.
+\end{thebibliography}
+
+\end{document} 

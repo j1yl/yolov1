@@ -4,6 +4,7 @@ import matplotlib.pyplot as plt
 import matplotlib.patches as patches
 from matplotlib.ticker import NullLocator
 
+
 def non_max_suppression(boxes, scores, iou_threshold=0.5):
     """
     Perform non-maximum suppression on boxes.
@@ -44,6 +45,7 @@ def non_max_suppression(boxes, scores, iou_threshold=0.5):
 
     return keep_indices
 
+
 def calculate_iou_np(box, boxes):
     """
     Calculate IoU between a box and a list of boxes.
@@ -73,6 +75,7 @@ def calculate_iou_np(box, boxes):
     iou = intersection / union
 
     return iou
+
 
 def convert_cellboxes_to_boxes(predictions, S=7, B=2, C=20):
     """
@@ -111,7 +114,9 @@ def convert_cellboxes_to_boxes(predictions, S=7, B=2, C=20):
                 # Get box coordinates and confidence for each predicted box
                 for b in range(B):
                     box_start_idx = C + b * 5
-                    box_pred = predictions[batch_idx, i, j, box_start_idx:box_start_idx + 5]
+                    box_pred = predictions[
+                        batch_idx, i, j, box_start_idx : box_start_idx + 5
+                    ]
                     confidence = box_pred[4]
 
                     # Only process box if confidence is above threshold
@@ -137,6 +142,7 @@ def convert_cellboxes_to_boxes(predictions, S=7, B=2, C=20):
         class_ids.append(class_preds)
 
     return bboxes, class_scores, class_ids
+
 
 def draw_boxes(image, boxes, scores, class_ids, class_names):
     """
@@ -172,7 +178,14 @@ def draw_boxes(image, boxes, scores, class_ids, class_names):
         color = colors[int(class_id)]
         box_width = x2 - x1
         box_height = y2 - y1
-        rect = patches.Rectangle((x1, y1), box_width, box_height, linewidth=2, edgecolor=color, facecolor="none")
+        rect = patches.Rectangle(
+            (x1, y1),
+            box_width,
+            box_height,
+            linewidth=2,
+            edgecolor=color,
+            facecolor="none",
+        )
 
         # Add rectangle to plot
         ax.add_patch(rect)
@@ -180,8 +193,12 @@ def draw_boxes(image, boxes, scores, class_ids, class_names):
         # Add label
         class_name = class_names[int(class_id)]
         plt.text(
-            x1, y1, f"{class_name} {score:.2f}",
-            color="white", fontsize=8, bbox=dict(facecolor=color, alpha=0.5)
+            x1,
+            y1,
+            f"{class_name} {score:.2f}",
+            color="white",
+            fontsize=8,
+            bbox=dict(facecolor=color, alpha=0.5),
         )
 
     plt.axis("off")
@@ -189,112 +206,138 @@ def draw_boxes(image, boxes, scores, class_ids, class_names):
     plt.gca().yaxis.set_major_locator(NullLocator())
     plt.show()
 
+
 def calculate_map(predictions, targets, iou_threshold=0.5):
     """
     Calculate mean Average Precision (mAP) for object detection.
-    
+
     Args:
         predictions: Tuple of (bboxes, scores, class_ids) lists for each image
-        targets: Tensor of shape (batch_size, 7, 7, 30) containing target boxes
+        targets: Tensor of shape (batch_size, S, S, C + B*5) containing target boxes
         iou_threshold: IoU threshold for considering a detection as correct
-        
+
     Returns:
         float: Mean Average Precision across all classes
     """
     num_classes = 20  # PASCAL VOC has 20 classes
     aps = []
-    
+
     # Unpack predictions
     all_bboxes, all_scores, all_class_ids = predictions
-    
+
     # Process each class
     for class_id in range(num_classes):
         all_predictions = []
         all_targets = []
-        
+
         # Collect predictions and targets for this class
         for img_idx in range(len(all_bboxes)):
             # Get predictions for this class
             class_mask = [cid == class_id for cid in all_class_ids[img_idx]]
             if any(class_mask):
-                class_bboxes = [box for i, box in enumerate(all_bboxes[img_idx]) if class_mask[i]]
-                class_scores = [score for i, score in enumerate(all_scores[img_idx]) if class_mask[i]]
+                class_bboxes = [
+                    box for i, box in enumerate(all_bboxes[img_idx]) if class_mask[i]
+                ]
+                class_scores = [
+                    score
+                    for i, score in enumerate(all_scores[img_idx])
+                    if class_mask[i]
+                ]
                 all_predictions.extend(list(zip(class_bboxes, class_scores)))
-            
+
             # Get targets for this class from the 7x7 grid
             target = targets[img_idx]
-            for i in range(7):
-                for j in range(7):
-                    if target[i, j, 20] == 1:  # If cell contains an object
-                        if target[i, j, 21] == class_id:  # If it's the right class
-                            # Convert target box to [x1, y1, x2, y2] format
-                            x, y, w, h = target[i, j, 22:26]
-                            x1 = (j + x - w/2) / 7
-                            y1 = (i + y - h/2) / 7
-                            x2 = (j + x + w/2) / 7
-                            y2 = (i + y + h/2) / 7
-                            all_targets.append([x1, y1, x2, y2])
-        
+            S = target.shape[0]  # Grid size
+            C = 20  # Number of classes
+            B = 2  # Number of boxes per cell
+
+            for i in range(S):
+                for j in range(S):
+                    # Check each box in the cell
+                    for b in range(B):
+                        box_start_idx = C + b * 5
+                        box_data = target[i, j, box_start_idx : box_start_idx + 5]
+                        confidence = box_data[4]
+
+                        # If this box contains an object
+                        if confidence > 0.5:
+                            # Get class probabilities for this cell
+                            class_probs = target[i, j, :C]
+                            target_class = torch.argmax(class_probs).item()
+
+                            # If this is the class we're looking for
+                            if target_class == class_id:
+                                # Convert YOLO format to [x1, y1, x2, y2]
+                                x, y, w, h = box_data[:4]
+                                x_center = (x + j) / S
+                                y_center = (y + i) / S
+                                x1 = x_center - w / 2
+                                y1 = y_center - h / 2
+                                x2 = x_center + w / 2
+                                y2 = y_center + h / 2
+                                all_targets.append([x1, y1, x2, y2])
+
         if all_predictions and all_targets:
             ap = calculate_ap(all_predictions, all_targets, iou_threshold)
             aps.append(ap)
-    
+
     return np.mean(aps) if aps else 0.0
+
 
 def calculate_ap(predictions, targets, iou_threshold=0.5):
     """
     Calculate Average Precision for a single class.
-    
+
     Args:
         predictions: List of (bbox, score) tuples
         targets: List of target bounding boxes
         iou_threshold: IoU threshold for considering a detection as correct
-        
+
     Returns:
         float: Average Precision
     """
     # Sort predictions by confidence
     predictions = sorted(predictions, key=lambda x: x[1], reverse=True)
-    
+
     tp = np.zeros(len(predictions))
     fp = np.zeros(len(predictions))
     used_targets = set()
-    
+
     # Process each prediction
     for pred_idx, (pred_box, score) in enumerate(predictions):
         best_iou = -np.inf
         best_target_idx = -1
-        
+
         # Find best matching target
         for target_idx, target_box in enumerate(targets):
             if target_idx in used_targets:
                 continue
-                
+
             iou = calculate_iou_np(pred_box, target_box)
             if iou > best_iou:
                 best_iou = iou
                 best_target_idx = target_idx
-        
+
         # Update TP/FP based on IoU threshold
         if best_iou >= iou_threshold:
             tp[pred_idx] = 1
             used_targets.add(best_target_idx)
         else:
             fp[pred_idx] = 1
-    
+
     # Calculate precision and recall
     tp_cumsum = np.cumsum(tp)
     fp_cumsum = np.cumsum(fp)
     recalls = tp_cumsum / len(targets)
     precisions = tp_cumsum / (tp_cumsum + fp_cumsum)
-    
+
     # Calculate AP using 11-point interpolation
     ap = 0
-    for t in np.arange(0., 1.1, 0.1):
+    for t in np.arange(0.0, 1.1, 0.1):
         if np.sum(recalls >= t) == 0:
             p = 0
         else:
             p = np.max(precisions[recalls >= t])
-        ap = ap + p / 11.
-    
-    return ap 
+        ap = ap + p / 11.0
+
+    return ap
