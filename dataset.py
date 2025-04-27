@@ -3,6 +3,7 @@ import torch
 import cv2
 import xml.etree.ElementTree as ET
 from torch.utils.data import Dataset
+import numpy as np
 
 
 class VOCDataset(Dataset):
@@ -70,20 +71,53 @@ class VOCDataset(Dataset):
         tree = ET.parse(annotation_path)
         root = tree.getroot()
 
-        # Initialize target tensor
-        target = torch.zeros((self.S, self.S, self.C + 5 * self.B))
-
-        # Extract bounding boxes
+        # Extract bounding boxes and class labels for albumentations
+        boxes = []
+        class_labels = []
+        
         for obj in root.findall("object"):
             class_name = obj.find("name").text
             class_idx = self.class_dict[class_name]
 
             bbox = obj.find("bndbox")
-            x_min = float(bbox.find("xmin").text) / width
-            y_min = float(bbox.find("ymin").text) / height
-            x_max = float(bbox.find("xmax").text) / width
-            y_max = float(bbox.find("ymax").text) / height
+            x_min = float(bbox.find("xmin").text)
+            y_min = float(bbox.find("ymin").text)
+            x_max = float(bbox.find("xmax").text)
+            y_max = float(bbox.find("ymax").text)
+            
+            # Convert to normalized coordinates [0, 1] for albumentations
+            x_min_norm = x_min / width
+            y_min_norm = y_min / height
+            x_max_norm = x_max / width
+            y_max_norm = y_max / height
+            
+            # Add to boxes list in albumentations format [x_min, y_min, x_max, y_max]
+            boxes.append([x_min_norm, y_min_norm, x_max_norm, y_max_norm])
+            class_labels.append(class_idx)
 
+        # Apply transforms if available
+        if self.transform:
+            # Albumentations requires named arguments
+            transformed = self.transform(
+                image=image,
+                bboxes=boxes,
+                class_labels=class_labels
+            )
+            image = transformed["image"]
+            boxes = transformed["bboxes"]
+            class_labels = transformed["class_labels"]
+            
+            # Get new image dimensions after transform
+            height, width = image.shape[:2]
+
+        # Initialize target tensor
+        target = torch.zeros((self.S, self.S, self.C + 5 * self.B))
+
+        # Convert boxes to YOLO format and fill target tensor
+        for box, class_idx in zip(boxes, class_labels):
+            # Boxes are already in normalized format [0, 1]
+            x_min, y_min, x_max, y_max = box
+            
             # Convert to YOLO format (x_center, y_center, width, height)
             x_center = (x_min + x_max) / 2
             y_center = (y_min + y_max) / 2
@@ -93,6 +127,10 @@ class VOCDataset(Dataset):
             # Determine which grid cell is responsible for this bbox
             grid_x = int(self.S * x_center)
             grid_y = int(self.S * y_center)
+            
+            # Skip if box is outside the grid
+            if grid_x >= self.S or grid_y >= self.S:
+                continue
 
             # Adjust x_center and y_center to be relative to grid cell
             cell_x = self.S * x_center - grid_x
@@ -100,13 +138,13 @@ class VOCDataset(Dataset):
 
             # Check if the cell already has an object
             if target[grid_y, grid_x, self.C] == 0:
+                # Ensure class_idx is an integer
+                class_idx_int = int(class_idx)
+                
                 # Set class prob and box parameters
-                target[grid_y, grid_x, class_idx] = 1
+                target[grid_y, grid_x, class_idx_int] = 1
                 target[grid_y, grid_x, self.C : self.C + 5] = torch.tensor(
                     [cell_x, cell_y, box_width, box_height, 1.0]
                 )
-
-        if self.transform:
-            image = self.transform(image)
 
         return image, target

@@ -13,10 +13,11 @@ class ConvBlock(nn.Module):
 
 
 class YOLOv1(nn.Module):
-    def __init__(self, in_channels=3, num_boxes=2, num_classes=20):
+    def __init__(self, in_channels=3, num_boxes=2, num_classes=20, dropout_rate=0.5):
         super(YOLOv1, self).__init__()
         self.num_boxes = num_boxes
         self.num_classes = num_classes
+        self.dropout_rate = dropout_rate
 
         # NOTE: Simplified architecture following the original YOLO v1 paper
         # Key differences:
@@ -53,7 +54,7 @@ class YOLOv1(nn.Module):
             nn.Flatten(),
             nn.Linear(1024 * 7 * 7, 4096),
             nn.LeakyReLU(0.1),
-            nn.Dropout(0.5),
+            nn.Dropout(dropout_rate),  # Dropout with configurable rate
             nn.Linear(4096, 7 * 7 * (5 * num_boxes + num_classes)),
             nn.Sigmoid(),  # For normalizing the output predictions
         )

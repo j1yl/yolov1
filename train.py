@@ -7,13 +7,15 @@ import torchvision.transforms as transforms
 import tqdm
 import json
 from datetime import datetime
+import math
 
 from model import YOLOv1
 from dataset import VOCDataset
 from loss import YOLOLoss
 from utils import convert_cellboxes_to_boxes, calculate_map
+from augmentations import YOLOAugmentations
 
-def train_epoch(model, train_loader, optimizer, loss_fn, device, epoch):
+def train_epoch(model, train_loader, optimizer, loss_fn, device, epoch, learning_rate):
     model.train()
     loop = tqdm.tqdm(train_loader, leave=True)
     mean_loss = []
@@ -46,7 +48,7 @@ def train_epoch(model, train_loader, optimizer, loss_fn, device, epoch):
         optimizer.step()
         
         # Update progress bar
-        loop.set_postfix(loss=loss.item())
+        loop.set_postfix(loss=loss.item(), lr=learning_rate)
     
     epoch_time = time.time() - epoch_start_time
     epoch_mean_loss = sum(mean_loss) / len(mean_loss)
@@ -59,10 +61,11 @@ def train_epoch(model, train_loader, optimizer, loss_fn, device, epoch):
         'obj_loss': sum(obj_losses) / len(obj_losses),
         'noobj_loss': sum(noobj_losses) / len(noobj_losses),
         'class_loss': sum(class_losses) / len(class_losses),
-        'time': epoch_time
+        'time': epoch_time,
+        'learning_rate': learning_rate
     }
     
-    print(f"Epoch {epoch} mean loss: {epoch_mean_loss:.4f}, Time: {epoch_time:.2f}s")
+    print(f"Epoch {epoch} mean loss: {epoch_mean_loss:.4f}, Time: {epoch_time:.2f}s, LR: {learning_rate:.6f}")
     return stats
 
 def validate(model, val_loader, device, epoch):
@@ -94,13 +97,35 @@ def validate(model, val_loader, device, epoch):
     print(f"Epoch {epoch} Validation mAP: {avg_map:.4f}")
     return avg_map
 
+def get_learning_rate(epoch, warmup_epochs=5, total_epochs=135):
+    """
+    Implement the learning rate schedule from the YOLOv1 paper:
+    - First warmup_epochs: gradually increase from 10^-3 to 10^-2
+    - Next 75 epochs: 10^-2
+    - Next 30 epochs: 10^-3
+    - Final 30 epochs: 10^-4
+    """
+    if epoch < warmup_epochs:
+        # Linear warmup from 10^-3 to 10^-2
+        return 1e-3 + (1e-2 - 1e-3) * (epoch / warmup_epochs)
+    elif epoch < warmup_epochs + 75:
+        # 10^-2 for 75 epochs
+        return 1e-2
+    elif epoch < warmup_epochs + 75 + 30:
+        # 10^-3 for 30 epochs
+        return 1e-3
+    else:
+        # 10^-4 for the remaining epochs
+        return 1e-4
+
 def main():
     # Configuration
-    LEARNING_RATE = 2e-5
+    INITIAL_LR = 1e-3  # Starting learning rate
     DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
     BATCH_SIZE = 80  # RTX 3090 has 24GB VRAM, can handle larger batches
     WEIGHT_DECAY = 0
-    EPOCHS = 135 # same as original paper
+    EPOCHS = 135  # same as original paper
+    WARMUP_EPOCHS = 5  # Number of epochs to warm up learning rate
     NUM_WORKERS = 4
     PIN_MEMORY = True
     # LOAD_PRETRAINED = False
@@ -116,18 +141,15 @@ def main():
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     log_file = f"logs/training_{timestamp}.json"
     
-    # Data preprocessing
-    transform = transforms.Compose([
-        transforms.ToPILImage(),
-        transforms.Resize((448, 448)),
-        transforms.ToTensor(),
-    ])
+    # Get augmentations from YOLOAugmentations class
+    train_transform = YOLOAugmentations.get_train_transforms(img_size=448)
+    val_transform = YOLOAugmentations.get_val_transforms(img_size=448)
     
-    # Load datasets
+    # Load datasets with the new augmentations
     train_dataset = VOCDataset(
         "data/VOC2012",
         split="train",
-        transform=transform,
+        transform=train_transform,
         S=7,
         B=2,
         C=20
@@ -136,7 +158,7 @@ def main():
     val_dataset = VOCDataset(
         "data/VOC2012",
         split="val",
-        transform=transform,
+        transform=val_transform,
         S=7,
         B=2,
         C=20
@@ -159,10 +181,12 @@ def main():
         shuffle=False,
     )
     
-    # Initialize model
-    model = YOLOv1(in_channels=3, num_boxes=2, num_classes=20).to(DEVICE)
+    # Initialize model with dropout rate 0.5 after the first connected layer
+    model = YOLOv1(in_channels=3, num_boxes=2, num_classes=20, dropout_rate=0.5).to(DEVICE)
+    
+    # Initialize optimizer with initial learning rate
     optimizer = optim.Adam(
-        model.parameters(), lr=LEARNING_RATE, weight_decay=WEIGHT_DECAY
+        model.parameters(), lr=INITIAL_LR, weight_decay=WEIGHT_DECAY
     )
     loss_fn = YOLOLoss()
     
@@ -175,12 +199,14 @@ def main():
     # Training statistics
     training_stats = {
         'config': {
-            'learning_rate': LEARNING_RATE,
+            'initial_learning_rate': INITIAL_LR,
             'batch_size': BATCH_SIZE,
             'epochs': EPOCHS,
+            'warmup_epochs': WARMUP_EPOCHS,
             'device': DEVICE,
             'model': 'YOLOv1',
-            'dataset': 'PASCAL VOC 2012'
+            'dataset': 'PASCAL VOC 2012',
+            'dropout_rate': 0.5
         },
         'epochs': []
     }
@@ -192,8 +218,15 @@ def main():
     for epoch in range(EPOCHS):
         print(f"\nEpoch {epoch+1}/{EPOCHS}")
         
+        # Get learning rate for this epoch
+        current_lr = get_learning_rate(epoch, WARMUP_EPOCHS, EPOCHS)
+        
+        # Update learning rate
+        for param_group in optimizer.param_groups:
+            param_group['lr'] = current_lr
+        
         # Training phase
-        epoch_stats = train_epoch(model, train_loader, optimizer, loss_fn, DEVICE, epoch)
+        epoch_stats = train_epoch(model, train_loader, optimizer, loss_fn, DEVICE, epoch, current_lr)
         
         # Validation phase (every 15 epochs)
         if (epoch + 1) % 15 == 0:
@@ -205,7 +238,8 @@ def main():
                 'model_state_dict': model.state_dict(),
                 'optimizer_state_dict': optimizer.state_dict(),
                 'train_loss': epoch_stats['mean_loss'],
-                'val_map': val_map
+                'val_map': val_map,
+                'learning_rate': current_lr
             }
             torch.save(checkpoint, os.path.join("checkpoints", f"yolov1_epoch_{epoch+1}.pt"))
             
@@ -213,7 +247,8 @@ def main():
             stats = {
                 'epoch': epoch + 1,
                 'train_loss': epoch_stats['mean_loss'],
-                'val_map': val_map
+                'val_map': val_map,
+                'learning_rate': current_lr
             }
             with open(log_file, 'a') as f:
                 json.dump(stats, f)
@@ -226,17 +261,19 @@ def main():
                     "epoch": epoch + 1,
                     "state_dict": model.state_dict(),
                     "optimizer": optimizer.state_dict(),
-                    "map": val_map
+                    "map": val_map,
+                    "learning_rate": current_lr
                 }, os.path.join("checkpoints", "best_model.pth.tar"))
                 print(f"New best model saved with mAP: {val_map:.4f}")
         
-        # Save checkpoint every 5 epochs
-        if (epoch + 1) % 5 == 0:
+        # Save checkpoint every 15 epochs
+        if (epoch + 1) % 15 == 0 or epoch == 0:
             checkpoint = {
                 'epoch': epoch + 1,
                 'model_state_dict': model.state_dict(),
                 'optimizer_state_dict': optimizer.state_dict(),
-                'train_loss': epoch_stats['mean_loss']
+                'train_loss': epoch_stats['mean_loss'],
+                'learning_rate': current_lr
             }
             torch.save(checkpoint, os.path.join("checkpoints", f"yolov1_epoch_{epoch+1}.pt"))
         
