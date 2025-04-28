@@ -21,14 +21,14 @@
   {\arabic{section}}
   {1em}
   {}
-\titlespacing*{\section}{0pt}{1ex plus 0.5ex minus .2ex}{1ex plus .2ex}
+\titlespacing*{\section}{0pt}{0.5ex plus 0.5ex minus .2ex}{1ex plus .2ex}
 
 \titleformat{\subsection}
   {\normalfont\bfseries}
   {\arabic{section}.\arabic{subsection}}
   {1em}
   {}
-\titlespacing*{\subsection}{0pt}{0.75ex plus 0.5ex minus .2ex}{0.75ex plus .2ex}
+\titlespacing*{\subsection}{0pt}{0.25ex plus 0.5ex minus .2ex}{0.75ex plus .2ex}
 
 % Configure listings
 \lstset{
@@ -124,19 +124,26 @@ Non-maximum suppression uses IoU:
 \toprule
 Epoch & Loss & mAP & Time/Epoch \\
 \midrule
-1 & [TBD] & [TBD] & [TBD] \\
-15 & [TBD] & [TBD] & [TBD] \\
-30 & [TBD] & [TBD] & [TBD] \\
-45 & [TBD] & [TBD] & [TBD] \\
-60 & [TBD] & [TBD] & [TBD] \\
-75 & [TBD] & [TBD] & [TBD] \\
-90 & [TBD] & [TBD] & [TBD] \\
-105 & [TBD] & [TBD] & [TBD] \\
-120 & [TBD] & [TBD] & [TBD] \\
-135 & [TBD] & [TBD] & [TBD] \\
+1 & 168.08 & 0.1543 & 29.13 \\
+15 & 60.23 & 0.2255 & 28.54 \\
+30 & 30.72 & 0.2222 & 29.34 \\
+45 & 21.04 & 0.2207 & 30.04 \\
+60 & 16.35 & 0.2259 & 29.80 \\
+75 & 12.95 & 0.2293 & 32.82 \\
+90 & 10.86 & 0.2213 & 30.40 \\
+105 & 9.33 & 0.2138 & 30.39 \\
+120 & 8.08 & 0.2131 & 32.84 \\
+135 & 7.22 & 0.2203 & 29.81 \\
 \bottomrule
 \end{tabular}
 \end{center}
+
+\subsection{GPU Requirements}
+\begin{itemize}
+    \item Batch size: 80
+    \item Memory: 24 GB
+    \item Training time: 3.08 hours
+\end{itemize}
 
 \section{Running Instructions}
 
@@ -146,9 +153,11 @@ Epoch & Loss & mAP & Time/Epoch \\
 Required packages:
 \begin{lstlisting}[language=bash]
 torch>=1.7.0
+torchvision>=0.8.0
 numpy>=1.19.0
+opencv-python>=4.4.0
 matplotlib>=3.3.0
-Pillow>=8.0.0
+tqdm>=4.50.0
 \end{lstlisting}
 
 Training configuration:
@@ -161,15 +170,7 @@ PIN_MEMORY = True
 \end{lstlisting}
 \end{center}
 
-\subsection{GPU Requirements}
-\begin{itemize}
-    \item Batch size: [TBD]
-    \item Memory: [TBD] GB
-    \item Training time: [TBD] hours
-\end{itemize}
-
 \subsection{Testing on Custom Images}
-To test on custom images:
 \begin{lstlisting}[language=bash]
 python predict.py --image path/to/image.jpg --model checkpoints/best_model.pth.tar
 \end{lstlisting}

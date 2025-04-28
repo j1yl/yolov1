@@ -20,16 +20,6 @@ pip install -r requirements.txt
 python download_voc.py
 ```
 
-## Project Structure
-
-- `model.py`: YOLO network architecture
-- `dataset.py`: Custom dataset for loading Pascal VOC
-- `loss.py`: Implementation of YOLO loss function
-- `utils.py`: Helper functions
-- `train.py`: Training loop
-- `predict.py`: Inference functionality
-- `download_voc.py`: Script to download and preprocess Pascal VOC dataset
-
 ## Training
 
 To train the model:
