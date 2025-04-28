@@ -1,29 +1,19 @@
-# TODO: implement evaluation metrics i.e. mAP and compare against the original YOLO v1 paper results
-# https://arxiv.org/pdf/1506.02640
-
-# Run the training script (python train.py)
-# Implement evaluation metrics in a new file (e.g., evaluate.py)
-# Run evaluation on the validation set
-# Collect all statistics (training loss, mAP, training time)
-# Create visualizations (loss curves, mAP values)
-# Write your 1-page report with all the required information
-
 import os
 import json
 import torch
-import torchvision.transforms as transforms
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 import matplotlib.pyplot as plt
 from datetime import datetime
+from torchmetrics.detection.mean_ap import MeanAveragePrecision
 
 from model import YOLOv1
-from dataset import VOCDataset
-from utils import convert_cellboxes_to_boxes, calculate_map
+from dataset import VOCDataset, get_transform
+from utils import convert_cellboxes_to_boxes
 
 def evaluate_checkpoint(model, val_loader, device, checkpoint_path):
     """
-    Evaluate a single checkpoint on the validation set.
+    Evaluate a single checkpoint on the validation set using torchvision's mAP implementation.
     
     Args:
         model (YOLOv1): YOLOv1 model
@@ -39,8 +29,8 @@ def evaluate_checkpoint(model, val_loader, device, checkpoint_path):
     model.load_state_dict(checkpoint["model_state_dict"])
     model.eval()
     
-    total_map = 0
-    num_batches = len(val_loader)
+    # Initialize metric
+    metric = MeanAveragePrecision()
     
     print(f"\nEvaluating checkpoint: {os.path.basename(checkpoint_path)}")
     with torch.no_grad():
@@ -48,16 +38,87 @@ def evaluate_checkpoint(model, val_loader, device, checkpoint_path):
             images = images.to(device)
             targets = targets.to(device)
             
+            # Get predictions
             predictions = model(images)
-            predictions = convert_cellboxes_to_boxes(predictions)
+            pred_boxes, pred_scores, pred_labels = convert_cellboxes_to_boxes(predictions)
             
-            # Calculate mAP for this batch
-            batch_map = calculate_map(predictions, targets)
-            total_map += batch_map
+            # Convert predictions to torchvision format
+            batch_preds = []
+            for boxes, scores, labels in zip(pred_boxes, pred_scores, pred_labels):
+                if len(boxes) > 0:
+                    # Convert boxes to tensor format [x1, y1, x2, y2]
+                    boxes_tensor = torch.tensor(boxes, device=device)
+                    scores_tensor = torch.tensor(scores, device=device)
+                    labels_tensor = torch.tensor(labels, device=device)
+                    
+                    batch_preds.append({
+                        'boxes': boxes_tensor,
+                        'scores': scores_tensor,
+                        'labels': labels_tensor
+                    })
+                else:
+                    # Empty prediction
+                    batch_preds.append({
+                        'boxes': torch.zeros((0, 4), device=device),
+                        'scores': torch.zeros(0, device=device),
+                        'labels': torch.zeros(0, dtype=torch.int64, device=device)
+                    })
             
-    avg_map = total_map / num_batches
-    print(f"mAP: {avg_map:.4f}")
-    return avg_map
+            # Convert targets to torchvision format
+            batch_targets = []
+            for target in targets:
+                # Extract ground truth boxes and labels from YOLO format
+                S = target.shape[0]  # Grid size
+                C = 20  # Number of classes
+                B = 2  # Number of boxes per cell
+                
+                gt_boxes = []
+                gt_labels = []
+                
+                for i in range(S):
+                    for j in range(S):
+                        # Check each box in the cell
+                        for b in range(B):
+                            box_start_idx = C + b * 5
+                            box_data = target[i, j, box_start_idx:box_start_idx + 5]
+                            confidence = box_data[4]
+                            
+                            if confidence > 0.5:
+                                # Get class probabilities
+                                class_probs = target[i, j, :C]
+                                label = torch.argmax(class_probs).item()
+                                
+                                # Convert YOLO format to [x1, y1, x2, y2]
+                                x, y, w, h = box_data[:4]
+                                x_center = (x + j) / S
+                                y_center = (y + i) / S
+                                x1 = x_center - w / 2
+                                y1 = y_center - h / 2
+                                x2 = x_center + w / 2
+                                y2 = y_center + h / 2
+                                
+                                gt_boxes.append([x1, y1, x2, y2])
+                                gt_labels.append(label)
+                
+                if len(gt_boxes) > 0:
+                    batch_targets.append({
+                        'boxes': torch.tensor(gt_boxes, device=device),
+                        'labels': torch.tensor(gt_labels, device=device)
+                    })
+                else:
+                    batch_targets.append({
+                        'boxes': torch.zeros((0, 4), device=device),
+                        'labels': torch.zeros(0, dtype=torch.int64, device=device)
+                    })
+            
+            # Update metric
+            metric.update(batch_preds, batch_targets)
+    
+    # Compute final metrics
+    results = metric.compute()
+    map_score = results['map'].item()
+    print(f"mAP: {map_score:.4f}")
+    return map_score
 
 def plot_map_curve(map_scores, epochs, output_dir):
     """
@@ -91,12 +152,8 @@ def main():
     output_dir = f"logs/evaluation_{timestamp}"
     os.makedirs(output_dir, exist_ok=True)
     
-    # Data preprocessing
-    transform = transforms.Compose([
-        transforms.ToPILImage(),
-        transforms.Resize((448, 448)),
-        transforms.ToTensor(),
-    ])
+    # Get validation transform
+    transform = get_transform(train=False)
     
     # Load validation dataset
     val_dataset = VOCDataset(

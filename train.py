@@ -3,19 +3,17 @@ import time
 import torch
 import torch.optim as optim
 from torch.utils.data import DataLoader
-import torchvision.transforms as transforms
 import tqdm
 import json
 from datetime import datetime
-import math
-
+import csv
+from torchmetrics.detection.mean_ap import MeanAveragePrecision
 from model import YOLOv1
 from dataset import VOCDataset
 from loss import YOLOLoss
-from utils import convert_cellboxes_to_boxes, calculate_map
-from augmentations import YOLOAugmentations
+from utils import convert_cellboxes_to_boxes
 
-def train_epoch(model, train_loader, optimizer, loss_fn, device, epoch, learning_rate):
+def train_epoch(model, train_loader, optimizer, loss_fn, device, epoch, learning_rate, log_loss_csv=None):
     model.train()
     loop = tqdm.tqdm(train_loader, leave=True)
     mean_loss = []
@@ -65,37 +63,120 @@ def train_epoch(model, train_loader, optimizer, loss_fn, device, epoch, learning
         'learning_rate': learning_rate
     }
     
+    # Log loss components to CSV if path provided
+    if log_loss_csv is not None:
+        file_exists = os.path.isfile(log_loss_csv)
+        with open(log_loss_csv, 'a', newline='') as csvfile:
+            writer = csv.DictWriter(csvfile, fieldnames=list(stats.keys()))
+            if not file_exists:
+                writer.writeheader()
+            writer.writerow(stats)
+    
     print(f"Epoch {epoch} mean loss: {epoch_mean_loss:.4f}, Time: {epoch_time:.2f}s, LR: {learning_rate:.6f}")
+    print(f"  coord_loss: {stats['coord_loss']:.4f}, obj_loss: {stats['obj_loss']:.4f}, noobj_loss: {stats['noobj_loss']:.4f}, class_loss: {stats['class_loss']:.4f}")
     return stats
 
 def validate(model, val_loader, device, epoch):
     """
-    Validate the model on the validation dataset.
+    Validate the model on the validation dataset using torchmetrics' MeanAveragePrecision.
     """
     model.eval()
-    total_map = 0
+    metric = MeanAveragePrecision(
+        iou_type="bbox",
+        box_format="xyxy",
+        class_metrics=True,
+        iou_thresholds=[0.1, 0.25, 0.5, 0.75]
+    )
     num_batches = len(val_loader)
-    
     print(f"\nValidating epoch {epoch}...")
+    
+    total_predictions = 0
+    total_targets = 0
+    
     with torch.no_grad():
         for batch_idx, (images, targets) in enumerate(val_loader):
-            # Print progress
-            if batch_idx % 10 == 0:
-                print(f"Validation progress: {batch_idx}/{num_batches} batches")
-                
             images = images.to(device)
             targets = targets.to(device)
-            
             predictions = model(images)
-            predictions = convert_cellboxes_to_boxes(predictions)
             
-            # Calculate mAP for this batch
-            batch_map = calculate_map(predictions, targets)
-            total_map += batch_map
+            # Convert predictions to boxes with lower confidence threshold
+            all_boxes, all_scores, all_class_ids = convert_cellboxes_to_boxes(predictions, conf_threshold=0.1)
             
-    avg_map = total_map / num_batches
-    print(f"Epoch {epoch} Validation mAP: {avg_map:.4f}")
-    return avg_map
+            batch_size = images.shape[0]
+            preds = []
+            gts = []
+            
+            for i in range(batch_size):
+                # Format predictions for torchmetrics
+                boxes = torch.tensor(all_boxes[i], dtype=torch.float32, device=device) if len(all_boxes[i]) > 0 else torch.zeros((0, 4), dtype=torch.float32, device=device)
+                scores = torch.tensor(all_scores[i], dtype=torch.float32, device=device) if len(all_scores[i]) > 0 else torch.zeros((0,), dtype=torch.float32, device=device)
+                labels = torch.tensor(all_class_ids[i], dtype=torch.int64, device=device) if len(all_class_ids[i]) > 0 else torch.zeros((0,), dtype=torch.int64, device=device)
+                
+                total_predictions += len(boxes)
+                preds.append({"boxes": boxes, "scores": scores, "labels": labels})
+                
+                # Format ground truth for torchmetrics
+                gt_boxes = []
+                gt_labels = []
+                S = targets.shape[1]
+                C = 20
+                B = 2
+                target = targets[i].cpu() if targets.is_cuda else targets[i]
+                
+                for y in range(S):
+                    for x in range(S):
+                        for b in range(B):
+                            box_start = C + b * 5
+                            box_data = target[y, x, box_start:box_start+5]
+                            if box_data[4] > 0.5:
+                                class_probs = target[y, x, :C]
+                                class_id = torch.argmax(class_probs).item()
+                                xc = (x + box_data[0].item()) / S
+                                yc = (y + box_data[1].item()) / S
+                                w = box_data[2].item()
+                                h = box_data[3].item()
+                                x1 = xc - w / 2
+                                y1 = yc - h / 2
+                                x2 = xc + w / 2
+                                y2 = yc + h / 2
+                                
+                                # Ensure coordinates are within [0, 1]
+                                x1 = max(0, min(1, x1))
+                                y1 = max(0, min(1, y1))
+                                x2 = max(0, min(1, x2))
+                                y2 = max(0, min(1, y2))
+                                
+                                gt_boxes.append([x1, y1, x2, y2])
+                                gt_labels.append(class_id)
+                
+                total_targets += len(gt_boxes)
+                gt_boxes = torch.tensor(gt_boxes, dtype=torch.float32, device=device) if len(gt_boxes) > 0 else torch.zeros((0, 4), dtype=torch.float32, device=device)
+                gt_labels = torch.tensor(gt_labels, dtype=torch.int64, device=device) if len(gt_labels) > 0 else torch.zeros((0,), dtype=torch.int64, device=device)
+                gts.append({"boxes": gt_boxes, "labels": gt_labels})
+            
+            metric.update(preds, gts)
+            if batch_idx % 10 == 0:
+                print(f"Validation progress: {batch_idx}/{num_batches} batches")
+    
+    results = metric.compute()
+    
+    # Print detailed metrics
+    print(f"\nValidation Metrics for Epoch {epoch}:")
+    print(f"Total predictions: {total_predictions}")
+    print(f"Total ground truth boxes: {total_targets}")
+    print(f"mAP@0.5: {results['map_50'].item():.4f}")
+    print(f"mAP@0.75: {results['map_75'].item():.4f}")
+    print(f"mAP: {results['map'].item():.4f}")
+    
+    # Print per-class AP
+    print("\nPer-class AP@0.5:")
+    if 'map_50_per_class' in results and results['map_50_per_class'] is not None:
+        for i, ap in enumerate(results['map_50_per_class']):
+            print(f"Class {i}: {ap.item():.4f}")
+    else:
+        print("Per-class AP@0.5 not available (no correct predictions or metric not computed).")
+    
+    return results['map'].item()
 
 def get_learning_rate(epoch, warmup_epochs=5, total_epochs=135):
     """
@@ -119,37 +200,27 @@ def get_learning_rate(epoch, warmup_epochs=5, total_epochs=135):
         return 1e-5
 
 def main():
-    # Configuration
-    INITIAL_LR = 1e-3  # Starting learning rate
+    INITIAL_LR = 1e-3
     DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
-    BATCH_SIZE = 80  # RTX 3090 has 24GB VRAM, can handle larger batches
-    WEIGHT_DECAY = 0
-    EPOCHS = 135  # same as original paper
-    WARMUP_EPOCHS = 5  # Number of epochs to warm up learning rate
-    NUM_WORKERS = 4
+    BATCH_SIZE = 84
+    WEIGHT_DECAY = 0.0005
+    EPOCHS = 135
+    WARMUP_EPOCHS = 5
+    NUM_WORKERS = 8
     PIN_MEMORY = True
-    # LOAD_PRETRAINED = False
-    # LOAD_PRETRAINED_MODEL_PATH = ""
-    # IMG_DIR = "data/VOC2012/JPEGImages"
-    # LABEL_DIR = "data/VOC2012/Annotations"
-    
-    # Create directories for logs and checkpoints
+
     os.makedirs("checkpoints", exist_ok=True)
     os.makedirs("logs", exist_ok=True)
     
-    # Create timestamp for this training run
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     log_file = f"logs/training_{timestamp}.json"
+    loss_log_csv = f"logs/loss_components_{timestamp}.csv"
     
-    # Get augmentations from YOLOAugmentations class
-    train_transform = YOLOAugmentations.get_train_transforms(img_size=448)
-    val_transform = YOLOAugmentations.get_val_transforms(img_size=448)
-    
-    # Load datasets with the new augmentations
+    # Load datasets with no augmentations
     train_dataset = VOCDataset(
         "data/VOC2012",
         split="train",
-        transform=train_transform,
+        transform=None,
         S=7,
         B=2,
         C=20
@@ -158,7 +229,7 @@ def main():
     val_dataset = VOCDataset(
         "data/VOC2012",
         split="val",
-        transform=val_transform,
+        transform=None,
         S=7,
         B=2,
         C=20
@@ -181,22 +252,13 @@ def main():
         shuffle=False,
     )
     
-    # Initialize model with dropout rate 0.5 after the first connected layer
     model = YOLOv1(in_channels=3, num_boxes=2, num_classes=20, dropout_rate=0.5).to(DEVICE)
     
-    # Initialize optimizer with initial learning rate
     optimizer = optim.Adam(
         model.parameters(), lr=INITIAL_LR, weight_decay=WEIGHT_DECAY
     )
     loss_fn = YOLOLoss()
-    
-    # Load pretrained model if specified
-    # if LOAD_PRETRAINED:
-    #     checkpoint = torch.load(LOAD_PRETRAINED_MODEL_PATH)
-    #     model.load_state_dict(checkpoint["state_dict"])
-    #     optimizer.load_state_dict(checkpoint["optimizer"])
-    
-    # Training statistics
+
     training_stats = {
         'config': {
             'initial_learning_rate': INITIAL_LR,
@@ -206,27 +268,27 @@ def main():
             'device': DEVICE,
             'model': 'YOLOv1',
             'dataset': 'PASCAL VOC 2012',
-            'dropout_rate': 0.5
+            'dropout_rate': 0.5,
+            'lambda_coord': loss_fn.lambda_coord,
+            'lambda_obj': loss_fn.lambda_obj,
+            'lambda_noobj': loss_fn.lambda_noobj,
+            'lambda_class': loss_fn.lambda_class,
         },
         'epochs': []
     }
     
-    # Training loop
     start_time = time.time()
     best_map = 0.0
     
     for epoch in range(EPOCHS):
         print(f"\nEpoch {epoch+1}/{EPOCHS}")
         
-        # Get learning rate for this epoch
         current_lr = get_learning_rate(epoch, WARMUP_EPOCHS, EPOCHS)
         
-        # Update learning rate
         for param_group in optimizer.param_groups:
             param_group['lr'] = current_lr
         
-        # Training phase
-        epoch_stats = train_epoch(model, train_loader, optimizer, loss_fn, DEVICE, epoch, current_lr)
+        epoch_stats = train_epoch(model, train_loader, optimizer, loss_fn, DEVICE, epoch, current_lr, log_loss_csv=loss_log_csv)
         
         # Validation phase (every 15 epochs)
         if (epoch + 1) % 15 == 0 or epoch == 0:
@@ -287,9 +349,9 @@ def main():
     total_time = time.time() - start_time
     print(f"Training completed in {total_time:.2f} seconds ({total_time/3600:.2f} hours)")
     
-    # Save final training stats
     training_stats['total_time'] = total_time
     training_stats['best_map'] = best_map
+
     with open(log_file, 'w') as f:
         json.dump(training_stats, f, indent=4)
     

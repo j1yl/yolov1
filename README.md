@@ -4,10 +4,10 @@ This is a PyTorch implementation of YOLO v1 for object detection on the Pascal V
 
 ## Setup
 
-1. Create a virtual environment (recommended):
+1. Create a virtual environment:
 ```bash
 python -m venv venv
-source venv/bin/activate  # On Windows: venv\Scripts\activate
+source venv/bin/activate
 ```
 
 2. Install dependencies:
@@ -29,6 +29,10 @@ python download_voc.py
 - `train.py`: Training loop
 - `predict.py`: Inference functionality
 - `download_voc.py`: Script to download and preprocess Pascal VOC dataset
+- `augmentations.py`: Image augmentation transforms using albumentations
+- `evaluate.py`: Evaluate and generate mAP stats
+- `preprocessor.py`: Prep dataset
+- `visualize_gt.py`: Visualize ground truths
 
 ## Training
 
@@ -53,8 +57,7 @@ python predict.py
 ```
 
 Make sure to:
-1. Update the `MODEL_PATH` in `predict.py` to point to your trained model
-2. Update the `IMAGE_PATH` to point to your test image
+1. Use `--image /path/to/image` parameter
 
 ## Model Architecture
 

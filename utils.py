@@ -84,7 +84,7 @@ def calculate_iou_np(box, boxes):
     return iou
 
 
-def convert_cellboxes_to_boxes(predictions, S=7, B=2, C=20):
+def convert_cellboxes_to_boxes(predictions, S=7, B=2, C=20, conf_threshold=0.1):
     """
     Convert YOLO predictions to bounding boxes.
 
@@ -93,6 +93,7 @@ def convert_cellboxes_to_boxes(predictions, S=7, B=2, C=20):
         S (int): Grid size
         B (int): Number of boxes per grid cell
         C (int): Number of classes
+        conf_threshold (float): Confidence threshold for box predictions
 
     Returns:
         tuple: (all_boxes, all_scores, all_class_ids)
@@ -127,7 +128,7 @@ def convert_cellboxes_to_boxes(predictions, S=7, B=2, C=20):
                     confidence = box_pred[4]
 
                     # Only process box if confidence is above threshold
-                    if confidence > 0.5:
+                    if confidence > conf_threshold:
                         # Convert to absolute coordinates
                         x_center = (box_pred[0] + j) / S
                         y_center = (box_pred[1] + i) / S
@@ -140,78 +141,23 @@ def convert_cellboxes_to_boxes(predictions, S=7, B=2, C=20):
                         x2 = x_center + width / 2
                         y2 = y_center + height / 2
 
-                        boxes.append([x1, y1, x2, y2])
-                        scores.append(confidence * class_score)
-                        class_preds.append(class_id)
+                        # Ensure coordinates are within [0, 1]
+                        x1 = max(0, min(1, x1))
+                        y1 = max(0, min(1, y1))
+                        x2 = max(0, min(1, x2))
+                        y2 = max(0, min(1, y2))
+
+                        # Filter out invalid boxes
+                        if x2 > x1 and y2 > y1:
+                            boxes.append([x1, y1, x2, y2])
+                            scores.append(confidence * class_score)
+                            class_preds.append(class_id)
 
         bboxes.append(boxes)
         class_scores.append(scores)
         class_ids.append(class_preds)
 
     return bboxes, class_scores, class_ids
-
-
-def draw_boxes(image, boxes, scores, class_ids, class_names):
-    """
-    Draw bounding boxes on image.
-
-    Args:
-        image (numpy.ndarray): Image
-        boxes (list): List of bounding boxes [x1, y1, x2, y2]
-        scores (list): List of confidence scores
-        class_ids (list): List of class indices
-        class_names (list): List of class names
-    """
-    plt.figure()
-    fig, ax = plt.subplots(1)
-    ax.imshow(image)
-
-    # Assign colors for each class
-    cmap = plt.get_cmap("tab20b")
-    colors = [cmap(i) for i in np.linspace(0, 1, len(class_names))]
-
-    # Draw boxes
-    for i, (box, score, class_id) in enumerate(zip(boxes, scores, class_ids)):
-        x1, y1, x2, y2 = box
-
-        # Convert to pixel coordinates
-        height, width, _ = image.shape
-        x1 = int(x1 * width)
-        y1 = int(y1 * height)
-        x2 = int(x2 * width)
-        y2 = int(y2 * height)
-
-        # Create rectangle patch
-        color = colors[int(class_id)]
-        box_width = x2 - x1
-        box_height = y2 - y1
-        rect = patches.Rectangle(
-            (x1, y1),
-            box_width,
-            box_height,
-            linewidth=2,
-            edgecolor=color,
-            facecolor="none",
-        )
-
-        # Add rectangle to plot
-        ax.add_patch(rect)
-
-        # Add label
-        class_name = class_names[int(class_id)]
-        plt.text(
-            x1,
-            y1,
-            f"{class_name} {score:.2f}",
-            color="white",
-            fontsize=8,
-            bbox=dict(facecolor=color, alpha=0.5),
-        )
-
-    plt.axis("off")
-    plt.gca().xaxis.set_major_locator(NullLocator())
-    plt.gca().yaxis.set_major_locator(NullLocator())
-    plt.show()
 
 
 def calculate_map(predictions, targets, iou_threshold=0.5):

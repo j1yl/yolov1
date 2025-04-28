@@ -8,9 +8,8 @@ class YOLOLoss(nn.Module):
         self.B = B
         self.C = C
         
-        # Adjust scaling factors to be more balanced
-        self.lambda_coord = 1.0  # Reduced from 5.0
-        self.lambda_noobj = 1.0  # Increased from 0.5
+        self.lambda_coord = 5
+        self.lambda_noobj = 0.5
         self.lambda_obj = 1.0
         self.lambda_class = 1.0
         
@@ -56,12 +55,19 @@ class YOLOLoss(nn.Module):
                 # Calculate coordinate loss for best matching boxes
                 for b in range(self.B):
                     mask = (best_box_idx == b) & (target_cell[:, 4] == 1)
-                    if mask.any():
-                        pred_box = pred_cell[mask, b*5:(b+1)*5]
-                        target_box = target_cell[mask, :5]
-                        cell_coord_loss = self.mse(pred_box[:, :4], target_box[:, :4])
-                        coord_loss += cell_coord_loss
-                        total_loss += self.lambda_coord * cell_coord_loss
+                    num_coord_samples = mask.sum().item()
+                    if num_coord_samples > 0:
+                        # print(f"[DEBUG] coord_loss mask ON for {num_coord_samples} samples at grid cell ({i},{j}), box {b}")
+                        if mask.any():
+                            pred_box = pred_cell[mask, b*5:(b+1)*5]
+                            target_box = target_cell[mask, :5]
+                            cell_coord_loss = self.mse(pred_box[:, :4], target_box[:, :4])
+                            coord_loss += cell_coord_loss
+                            total_loss += self.lambda_coord * cell_coord_loss
+                            # if num_coord_samples > 0 and i == 0 and j == 0 and b == 0:
+                                # print(f"[DEBUG] pred_box[:3]: {pred_box[:3, :4].detach().cpu().numpy()}")
+                                # print(f"[DEBUG] target_box[:3]: {target_box[:3, :4].detach().cpu().numpy()}")
+                            # print(f"[DEBUG] cell_coord_loss: {cell_coord_loss.item()}")
                 
                 # Calculate object loss
                 obj_mask = target_cell[:, 4] == 1
